@@ -1,0 +1,21 @@
+{
+  "name": "chatgpt-tidy",
+  "private": true,
+  "scripts": {
+    "test": "node --check chatgpt-tidy/content.js && node --test tests/extension.test.cjs",
+    "package": "node scripts/package.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.1"
+  },
+  "version": "0.3.8",
+  "description": "Question navigation and local project visibility controls for ChatGPT.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chelics/chatgpt-tidy.git"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

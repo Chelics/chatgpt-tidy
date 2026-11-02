@@ -1,0 +1,15 @@
+.cgt-hidden-project { display: none !important; }
+.cgt-project-wrap { position: relative; }
+.cgt-hide-project {
+  position: absolute; right: 30px; top: 50%; transform: translateY(-50%); z-index: 3;
+  width: 22px; height: 22px; border: 0; border-radius: 5px;
+  background: transparent; color: inherit; font: 16px/1 system-ui;
+  cursor: pointer; opacity: 0;
+}
+.cgt-project-wrap:hover > .cgt-hide-project,
+.cgt-project-wrap:focus-within > .cgt-hide-project,
+.cgt-hide-project:focus-visible { opacity: .65; }
+.cgt-hide-project:hover { opacity: 1 !important; background: #8882; }
+.cgt-hide-project:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.cgt-jump-target { outline: 1px solid #8888 !important; outline-offset: 6px; border-radius: 8px; }
+@media (hover: none) { .cgt-hide-project { opacity: .65; } }
