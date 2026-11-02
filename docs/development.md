@@ -2,7 +2,7 @@
 
 ## 准备环境
 
-使用 Node.js 22.12 或更高版本及 npm。自动测试工作流使用 Node.js 24。打包命令还需要系统提供 `zip`，可在 macOS 或 Linux 中执行。
+使用 Node.js 22.12 或更高版本及 npm。自动测试工作流使用 Node.js 24。打包命令还需要系统提供 `zip` 和 `unzip`，可在 macOS 或 Linux 中执行。
 
 ```sh
 git clone https://github.com/Chelics/chatgpt-tidy.git
@@ -41,6 +41,8 @@ npm test
 3. 切换对话，并通过浏览器前进和后退切换页面，检查目录是否隔离。
 4. 隐藏一个项目，刷新确认仍隐藏，再打开该项目并恢复。
 5. 检查深色模式、窄窗口和键盘操作。
+6. 拖动导航按钮，刷新检查位置保留，缩小窗口检查面板边界。
+7. 创建新对话并发送首问，检查地址变化期间目录不会反复闪回加载提示。
 
 ## 打包扩展
 
@@ -49,6 +51,8 @@ npm run package
 ```
 
 脚本检查 `package.json` 与 Manifest 的版本一致，然后生成 `dist/chatgpt-tidy-<版本号>.zip`。压缩包仅包含扩展的三个运行文件和仓库许可证，不包含开发依赖、测试或本地设置。
+
+打包后逐文件比较压缩包与源码，并将验证后的压缩包同步到根目录的 `chatgpt-tidy.zip`。
 
 解压后，在 Chrome 扩展管理页加载包内的 `chatgpt-tidy` 文件夹。`dist/` 和 ZIP 文件不提交到源码仓库。
 

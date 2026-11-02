@@ -12,6 +12,18 @@ const fixture = `<nav aria-label="侧栏">
   <div id="nested"><h2>一组项目</h2><div><a href="/g/g-p-gamma/project">另一个项目</a></div><a href="/c/child">子对话</a></div>
 </nav><main><article><div data-message-author-role="user">第一个问题</div><div data-message-author-role="assistant">回答</div></article><article><div data-message-author-role="user">第二个问题</div></article></main>`;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitFor(predicate, timeout = 2000) {
+  const deadline = Date.now() + timeout;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, '等待页面状态更新超时');
+    await wait(20);
+  }
+}
+function navigate(win,path) {
+  const link=win.document.createElement('a');link.href=path;
+  link.addEventListener('click',event=>{event.preventDefault();win.history.pushState({},'',path);});
+  win.document.body.append(link);link.click();link.remove();
+}
 async function setup(stored = {}, options = {}) {
   const dom = new JSDOM(fixture, { url: 'https://chatgpt.com/c/chat-one', runScripts: 'outside-only', pretendToBeVisual: true });
   const win = dom.window;
@@ -40,9 +52,9 @@ test('目录跳转、新消息、切换对话和重复初始化', async () => {
     const newMessage = doc.createElement('div'); newMessage.dataset.messageAuthorRole = 'user'; newMessage.textContent = '第三个问题';
     doc.querySelector('main').append(newMessage); await wait(230);
     assert.equal(ui.querySelectorAll('.question').length, 3);
-    win.history.pushState({}, '', '/c/chat-two');
+    navigate(win,'/c/chat-two');
     doc.querySelector('main').innerHTML = '<div data-message-author-role="user">另一段对话</div>';
-    await wait(230);
+    await wait(850);
     assert.equal(ui.querySelectorAll('.question').length, 1);
     assert.match(ui.querySelector('.question').textContent, /另一段对话/);
     win.eval(source); assert.equal(doc.querySelectorAll('#cgt-assistant').length, 1);
@@ -212,28 +224,28 @@ test('切换对话时清空旧目录，保留在 DOM 中的上一页不混入新
   const {dom, doc, ui, win} = await setup({}, {html:'<main id="old"><div class="rich-text-user-turn">旧对话问题</div></main>'});
   try {
     assert.equal(ui.querySelector('.label').textContent, '旧对话问题');
-    win.history.pushState({}, '', '/c/chat-two');
+    navigate(win,'/c/chat-two');
     // React may keep the old page mounted while the new page loads.
     doc.querySelector('#old').setAttribute('aria-hidden','true');
     const next = doc.createElement('main'); next.id = 'new';
     next.innerHTML = '<div class="rich-text-user-turn">新对话问题</div>';
-    doc.body.append(next); await wait(180);
+    doc.body.append(next); await wait(850);
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent), ['新对话问题']);
     doc.querySelector('#old').removeAttribute('aria-hidden');
     next.setAttribute('aria-hidden','true');
-    win.history.pushState({}, '', '/c/chat-one');
-    await wait(160);
+    navigate(win,'/c/chat-one');
+    await waitFor(() => ui.querySelector('.label')?.textContent === '旧对话问题');
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent), ['旧对话问题']);
   } finally {dom.window.close();}
 });
 test('URL先变化而旧页面暂未卸载时，不重新填回旧消息', async () => {
   const {dom, doc, ui, win} = await setup();
   try {
-    win.history.pushState({}, '', '/c/chat-two');
-    await wait(160);
+    navigate(win,'/c/chat-two');
+    await wait(700);
     assert.equal(ui.querySelectorAll('.label').length, 0);
     doc.querySelector('main').innerHTML='<div data-turn="user">新对话加载完成</div>';
-    await wait(180);
+    await wait(850);
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent), ['新对话加载完成']);
   } finally {dom.window.close();}
 });
@@ -251,14 +263,14 @@ test('隐藏或移出视口的旧页面不混入目录，当前页屏幕外的�
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent), ['当前提问一','当前提问二']);
   } finally {dom.window.close();}
 });
-test('只有 URL 变化时自动清空，复用节点更新后加载新提问', async () => {
+test('明确导航后清空，复用节点更新后加载新提问', async () => {
   const {dom, doc, ui, win} = await setup({}, {html:'<main><div class="rich-text-user-turn">旧问题</div></main>'});
   try {
-    win.history.pushState({}, '', '/c/another-chat');
-    await wait(160);
+    navigate(win,'/c/another-chat');
+    await wait(700);
     assert.equal(ui.querySelectorAll('.label').length,0);
     doc.querySelector('.rich-text-user-turn').textContent='新问题';
-    await wait(180);
+    await wait(850);
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['新问题']);
   } finally {dom.window.close();}
 });
@@ -309,11 +321,11 @@ test('缓存目录仍按当前对话隔离', async () => {
   try {
     doc.querySelector('main').replaceChildren(); await wait(180);
     assert.equal(ui.querySelectorAll('.label').length,1);
-    win.history.pushState({},'', '/c/new-chat');
-    await wait(160);
+    navigate(win,'/c/new-chat');
+    await wait(700);
     assert.equal(ui.querySelectorAll('.label').length,0);
     doc.querySelector('main').innerHTML='<div data-turn-key="one" class="rich-text-user-turn">新对话</div>';
-    await wait(180);
+    await wait(850);
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['新对话']);
   } finally {dom.window.close();}
 });
@@ -486,9 +498,9 @@ test('实际新版用户气泡可直接识别，并按消息单元标识保留�
     doc.querySelector('main').insertAdjacentHTML('beforeend',question('fallback-turn-2:0:user','继续'));
     await wait(180);
     assert.equal(ui.querySelectorAll('.label').length,3);
-    win.history.pushState({},'', '/c/different-conversation');
+    navigate(win,'/c/different-conversation');
     doc.querySelector('main').innerHTML=question('fallback-turn-0:0:user','新对话的问题');
-    await wait(180);
+    await wait(850);
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['新对话的问题']);
   } finally {dom.window.close();}
 });
@@ -505,5 +517,204 @@ test('重新加载历史时重复的 fallback 搜索索引不能覆盖不同提�
     doc.querySelector('main').innerHTML=bubble('另一个加载出来的问题');
     await wait(180);
     assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['原有的问题','另一个加载出来的问题']);
+  } finally {dom.window.close();}
+});
+
+test('真实外层 message-ids 区分重复提问，重新挂载后保持同一目录身份', async () => {
+  const row=(id,index)=>`<div class="group/user-message" data-chatgpt-search-unit-key="fallback-turn-${index}:0:user" data-chatgpt-search-message-ids="${id}"><div data-content-search-unit-key="fallback-turn-${index}:0:user"><div data-user-message-bubble="true"><div class="whitespace-pre-wrap">那你先整理一下吧</div></div><button aria-label="复制消息">复制</button></div></div>`;
+  const {dom,ui,doc}=await setup({}, {html:'<main>'+row('message-one',0)+'</main>'});
+  try {
+    assert.equal(ui.querySelector('.question').dataset.key,'data-chatgpt-search-message-ids:message-one');
+    doc.querySelector('main').innerHTML=row('message-two',0);
+    await wait(180);
+    assert.equal(ui.querySelectorAll('.label').length,2);
+    doc.querySelector('main').innerHTML=row('message-one',8)+row('message-two',9);
+    await wait(180);
+    assert.deepEqual([...ui.querySelectorAll('.question')].map(node=>node.dataset.key),['data-chatgpt-search-message-ids:message-one','data-chatgpt-search-message-ids:message-two']);
+  } finally {dom.window.close();}
+});
+
+function pointer(win,target,type,x,y) {
+  const event=new win.MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y,button:0});
+  Object.defineProperty(event,'pointerId',{value:1});
+  target.dispatchEvent(event);
+}
+test('导航按钮可拖动并保存位置，拖动后的点击不会收起，单击仍可收起', async () => {
+  const {dom,win,doc,ui,saved}=await setup({collapsed:false});
+  let reopened;
+  try {
+    const host=doc.getElementById('cgt-assistant'),button=ui.querySelector('.toggle');
+    host.getBoundingClientRect=()=>({left:parseFloat(host.style.left)||100,top:host.style.top.endsWith('px')?parseFloat(host.style.top):80,width:230,height:300});
+    pointer(win,button,'pointerdown',120,100);
+    pointer(win,win,'pointermove',220,200);
+    pointer(win,win,'pointerup',220,200);
+    button.click();
+    assert.equal(ui.querySelector('.panel').hidden,false);
+    assert.deepEqual(saved().position,{x:200,y:180});
+    reopened=await setup(saved());
+    assert.equal(reopened.doc.getElementById('cgt-assistant').style.left,'200px');
+    assert.equal(reopened.doc.getElementById('cgt-assistant').style.top,'180px');
+    await wait(5);
+    button.click(); assert.equal(ui.querySelector('.panel').hidden,true);
+  } finally {dom.window.close();reopened?.dom.window.close();}
+});
+test('拖动超出边界被限制，窗口缩小后自动回到可见范围', async () => {
+  const {dom,win,doc,ui,saved}=await setup({collapsed:false});
+  try {
+    const host=doc.getElementById('cgt-assistant'),button=ui.querySelector('.toggle');
+    host.getBoundingClientRect=()=>({left:parseFloat(host.style.left)||100,top:host.style.top.endsWith('px')?parseFloat(host.style.top):80,width:230,height:300});
+    pointer(win,button,'pointerdown',120,100);
+    pointer(win,win,'pointermove',5000,5000);
+    pointer(win,win,'pointerup',5000,5000);
+    assert.equal(parseFloat(host.style.left),win.innerWidth-230-12);
+    assert.equal(parseFloat(host.style.top),win.innerHeight-300-12);
+    win.innerWidth=500;win.innerHeight=450;win.dispatchEvent(new win.Event('resize'));
+    assert.equal(host.style.left,'258px');assert.equal(host.style.top,'138px');
+    await wait(5);
+    pointer(win,button,'pointerdown',270,150);pointer(win,win,'pointermove',-100,-100);pointer(win,win,'pointerup',-100,-100);
+    assert.deepEqual(saved().position,{x:12,y:12});
+  } finally {dom.window.close();}
+});
+test('小幅指针移动按单击处理，取消拖动不保存新位置', async () => {
+  const {dom,win,doc,ui,saved}=await setup({collapsed:false,position:{x:100,y:80}});
+  try {
+    const host=doc.getElementById('cgt-assistant'),button=ui.querySelector('.toggle');
+    host.getBoundingClientRect=()=>({left:parseFloat(host.style.left)||100,top:host.style.top.endsWith('px')?parseFloat(host.style.top):80,width:230,height:300});
+    pointer(win,button,'pointerdown',120,100);pointer(win,win,'pointermove',122,102);pointer(win,win,'pointerup',122,102);
+    button.click();assert.equal(ui.querySelector('.panel').hidden,true);
+    pointer(win,button,'pointerdown',120,100);pointer(win,win,'pointermove',300,300);pointer(win,win,'pointercancel',300,300);
+    assert.deepEqual(saved().position,{x:100,y:80});
+    assert.equal(host.style.left,'100px');assert.equal(host.style.top,'80px');
+  } finally {dom.window.close();}
+});
+
+test('首问补齐正式消息 ID 时升级原目录项，不显示两遍', async () => {
+  const {dom,doc,ui}=await setup({}, {html:'<main><div data-user-message-bubble="true">相同的第一问</div></main>'});
+  try {
+    const first=doc.querySelector('[data-user-message-bubble]');
+    first.setAttribute('data-message-id','server-first');
+    first.classList.add('server-ready');await wait(180);
+    assert.equal(ui.querySelectorAll('.label').length,1);
+    assert.equal(ui.querySelector('.label').textContent,'相同的第一问');
+  } finally {dom.window.close();}
+});
+
+test('新对话不收录临时首问，地址稳定后只扫描正式消息且不刷新网页', async () => {
+  const {dom,doc,ui,win}=await setup({}, {html:'<main></main>'});
+  try {
+    navigate(win,'/');await wait(180);
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true">临时首问</div>';await wait(180);
+    assert.equal(ui.querySelectorAll('.label').length,0);
+    win.history.replaceState({},'', '/c/temporary-chat');
+    win.dispatchEvent(new win.PopStateEvent('popstate'));
+    await wait(140);
+    assert.equal(ui.querySelectorAll('.label').length,0);
+    doc.querySelector('main').replaceChildren();
+    win.history.replaceState({},'', '/c/final-chat');
+    await wait(180);
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true" data-message-id="server-first">正式首问</div>';
+    await wait(900);
+    assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['正式首问']);
+    await wait(500);
+    assert.equal(ui.querySelectorAll('.label').length,1);
+    assert.equal(win.location.pathname,'/c/final-chat');
+    doc.querySelector('main').insertAdjacentHTML('beforeend','<div data-user-message-bubble="true" data-message-id="server-next">后续提问</div>');await wait(180);
+    assert.equal(ui.querySelectorAll('.label').length,2);
+  } finally {dom.window.close();}
+});
+test('新建对话的临时与正式气泡同时出现，重建时不重复首问', async () => {
+  const {dom,doc,ui,win}=await setup({}, {html:'<main></main>'});
+  try {
+    navigate(win,'/');await wait(180);
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true">同一条首问</div>';await wait(180);
+    win.history.replaceState({},'', '/c/new-chat');
+    doc.querySelector('main').insertAdjacentHTML('beforeend','<div data-user-message-bubble="true" data-message-id="server">同一条首问</div>');
+    await wait(900);
+    assert.equal(ui.querySelectorAll('.label').length,1);
+    assert.equal(ui.querySelector('.question').dataset.key,'data-message-id:server');
+  } finally {dom.window.close();}
+});
+
+test('首问目录已生成后创建地址再次变化，重建必须能读取复用的消息节点', async () => {
+  const {dom,doc,ui,win}=await setup({}, {html:'<main></main>'});
+  try {
+    navigate(win,'/');await wait(180);
+    const first=doc.createElement('div');first.setAttribute('data-user-message-bubble','true');first.textContent='已显示后不应消失';doc.querySelector('main').append(first);await wait(180);
+    win.history.replaceState({},'', '/c/first-assigned');await wait(900);
+    assert.equal(ui.querySelector('.label')?.textContent,'已显示后不应消失');
+    win.history.replaceState({},'', '/c/canonical-assigned');await wait(900);
+    assert.equal(ui.querySelector('.label')?.textContent,'已显示后不应消失');
+    assert.equal(ui.querySelectorAll('.label').length,1);
+  } finally {dom.window.close();}
+});
+
+test('新对话目录重建后点击其他聊天，不把首问带到已有聊天', async () => {
+  const {dom,doc,ui,win}=await setup({}, {html:'<nav><a href="/c/existing-target">已有聊天</a></nav><main></main>'});
+  try {
+    navigate(win,'/');await wait(180);
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true">新对话首问</div>';await wait(180);
+    win.history.replaceState({},'', '/c/new-created');await wait(900);
+    assert.equal(ui.querySelectorAll('.label').length,1);
+    const link=doc.querySelector('nav a');link.addEventListener('click',event=>{event.preventDefault();navigate(win,'/c/existing-target');});
+    link.click();await wait(900);
+    assert.equal(ui.querySelectorAll('.label').length,0);
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true">已有聊天的问题</div>';await wait(900);
+    assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['已有聊天的问题']);
+  } finally {dom.window.close();}
+});
+
+test('本地运行轨迹记录阶段与节点计数，不包含对话、项目名或真实地址', async () => {
+  const {dom,doc,win}=await setup({}, {html:'<nav><div><a href="/g/g-p-private/project">不应导出的私人项目</a></div></nav><main><div data-user-message-bubble="true">不应导出的私人正文</div></main>'});
+  try {
+    const host=doc.getElementById('cgt-assistant');
+    let raw=host.getAttribute('data-cgt-trace');
+    assert.equal(JSON.parse(raw).version,'0.6.0');
+    assert.ok(!/私人|g-p-private|chat-one|chatgpt.com/.test(raw));
+    navigate(win,'/c/sensitive-id');await wait(700);
+    raw=host.getAttribute('data-cgt-trace');
+    const events=JSON.parse(raw).events;
+    assert.ok(events.some(event=>event.transition?.before===1));
+    assert.ok(events.some(event=>event.scan.wrongRoute>0));
+    assert.ok(!raw.includes('sensitive-id'));
+  } finally {dom.window.close();}
+});
+
+test('同一新对话后台重建期间保留已显示目录，不闪回加载中', async () => {
+  const {dom,doc,ui,win}=await setup({}, {html:'<main></main>'});
+  try {
+    navigate(win,'/');await wait(180);
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true" data-message-id="first">已显示的首问</div>';await wait(180);
+    win.history.replaceState({},'', '/c/initial-assigned');await wait(900);
+    const key=ui.querySelector('.question').dataset.key;
+    win.history.replaceState({},'', '/c/canonical-assigned');
+    await wait(160);
+    assert.equal(ui.querySelector('.label')?.textContent,'已显示的首问');
+    assert.equal(ui.querySelector('.note').textContent,'已加载1个问题，点击跳转');
+    assert.ok(!ui.querySelector('.body').textContent.includes('正在加载'));
+    await wait(900);
+    assert.equal(ui.querySelectorAll('.label').length,1);
+    assert.equal(ui.querySelector('.question').dataset.key,key);
+  } finally {dom.window.close();}
+});
+
+test('无法判断对话身份的自动地址变化也保留显示，新快照整份替换不合并', async () => {
+  const {dom,doc,ui,win}=await setup({}, {html:'<main><div data-user-message-bubble="true" data-message-id="before">之前的显示快照</div></main>'});
+  try {
+    win.history.replaceState({},'', '/g/unknown-context/c/unrelated-id');
+    doc.querySelector('main').innerHTML='<div data-user-message-bubble="true" data-message-id="after">当前页面的新快照</div>';
+    await wait(160);
+    assert.equal(ui.querySelector('.label')?.textContent,'之前的显示快照');
+    assert.ok(!ui.querySelector('.body').textContent.includes('正在加载'));
+    await wait(900);
+    assert.deepEqual([...ui.querySelectorAll('.label')].map(node=>node.textContent),['当前页面的新快照']);
+  } finally {dom.window.close();}
+});
+test('主动点击新对话按钮后立即清除旧目录', async () => {
+  const {dom,doc,ui,win}=await setup();
+  try {
+    const button=doc.createElement('button');button.setAttribute('aria-label','New chat');doc.body.append(button);
+    button.addEventListener('click',()=>win.history.pushState({},'', '/'));
+    button.click();await wait(160);
+    assert.equal(ui.querySelectorAll('.label').length,0);
   } finally {dom.window.close();}
 });

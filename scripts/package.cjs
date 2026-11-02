@@ -15,4 +15,12 @@ fs.rmSync(path.join(root, output), { force: true });
 const result = spawnSync('zip', ['-X', output, ...files], { cwd: root, stdio: 'inherit' });
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status || 1);
-console.log(`Created ${output}`);
+// Verify the packaged runtime, then update the original download path as well.
+for (const file of files) {
+  const extracted = spawnSync('unzip', ['-p', output, file], { cwd: root });
+  if (extracted.status !== 0 || !extracted.stdout.equals(fs.readFileSync(path.join(root, file)))) {
+    throw new Error(`Packaged file differs from source: ${file}`);
+  }
+}
+fs.copyFileSync(path.join(root, output), path.join(root, 'chatgpt-tidy.zip'));
+console.log(`Created and verified ${output}; synchronized chatgpt-tidy.zip`);

@@ -12,9 +12,26 @@
   const elementKeys = new WeakMap(), scrollPositions = new WeakMap();
   let messages = [], active = -1, activeKey = null, tab = 'questions', signature = '', timer;
   let route = location.pathname, storageReady = false;
+  let directoryPhase = route.includes('/c/') ? 'ready' : 'draft';
+  let settleUntil = 0, nextScanAt = 0, snapshotSignature = '', snapshotSince = 0, initializingNewChat = false;
+  let freshRouteRead = false, requestedNavigation = null, backgroundRebuild = false;
   const host = document.createElement('div');
   host.id = 'cgt-assistant';
-  host.style.cssText = 'position:fixed;right:20px;top:24%;z-index:2147483000;color-scheme:light dark';
+  host.style.cssText = 'position:fixed;width:230px;max-width:calc(100vw - 24px);pointer-events:none;right:20px;top:24%;z-index:2147483000;color-scheme:light dark';
+  const traceStart = Date.now(), trace = [], routeLabels = new Map();
+  let scanStats = {}, lastTraceState = '', lastTransition = null;
+  function routeLabel(path) {
+    if (!routeLabels.has(path)) routeLabels.set(path,(path.includes('/c/') ? 'chat-' : 'draft-')+(routeLabels.size+1));
+    return routeLabels.get(path);
+  }
+  function recordTrace(errorName) {
+    const state = {route:routeLabel(route),phase:directoryPhase,cached:messages.length,scan:scanStats,transition:lastTransition,...(errorName ? {error:errorName} : {})};
+    const serialized = JSON.stringify(state);
+    if (serialized === lastTraceState) return;
+    lastTraceState = serialized; trace.push({ms:Date.now()-traceStart,...state});
+    if (trace.length > 20) trace.shift();
+    host.setAttribute('data-cgt-trace',JSON.stringify({version:'0.6.0',events:trace}));
+  }
   const ui = host.attachShadow({ mode: 'open' });
   // Build with DOM APIs so initialization also works under Trusted Types enforcement.
   function el(tag, attrs = {}, text = '') {
@@ -29,9 +46,10 @@
     :host([data-dark]){color:#dedede;--paper:#232323;--muted:#969696;--line:#383838;--hover:#303030}
     *{box-sizing:border-box}button,a,input{font:inherit}button{cursor:pointer;color:inherit}
     button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #929292;outline-offset:2px}
-    .toggle{display:flex;align-items:center;gap:7px;margin-left:auto;border:1px solid var(--line);border-radius:9px;padding:7px 10px;background:var(--paper);color:var(--muted)}
+    .toggle{touch-action:none;user-select:none;cursor:grab;pointer-events:auto;display:flex;align-items:center;gap:7px;margin-left:auto;border:1px solid var(--line);border-radius:9px;padding:7px 10px;background:var(--paper);color:var(--muted)}
     .toggle:hover{color:inherit;background:var(--hover)}
-    .panel{width:230px;margin-top:8px;border:1px solid var(--line);border-radius:12px;background:var(--paper);box-shadow:0 4px 20px #00000008;overflow:hidden}
+    .toggle:active{cursor:grabbing}
+    .panel{pointer-events:auto;width:100%;margin-top:8px;border:1px solid var(--line);border-radius:12px;background:var(--paper);box-shadow:0 4px 20px #00000008;overflow:hidden}
     header{display:flex;gap:18px;padding:0 16px;border-bottom:1px solid var(--line)}
     header button{position:relative;background:none;border:0;padding:13px 0 11px;color:var(--muted);font-size:12px}
     header button[aria-selected=true]{color:inherit}
@@ -57,11 +75,11 @@
     .project[data-project-state=hidden] button:hover{border-color:var(--muted)}
     .group{font-size:10px;letter-spacing:1px;color:var(--muted);padding:13px 8px 4px}
     .notice{padding:0 16px 10px;font-size:11px;color:var(--muted)}.notice:empty{display:none}
-    .tooltip{position:fixed;z-index:2;width:min(360px,calc(100vw - 24px));max-height:45vh;overflow:auto;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--paper);box-shadow:0 6px 24px #0002;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;user-select:text;scrollbar-width:thin}
+    .tooltip{pointer-events:auto;position:fixed;z-index:2;width:min(360px,calc(100vw - 24px));max-height:45vh;overflow:auto;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--paper);box-shadow:0 6px 24px #0002;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;user-select:text;scrollbar-width:thin}
     [hidden]{display:none!important}
     @media(max-width:600px){.panel{width:min(230px,calc(100vw - 40px))}}
   `;
-  const launcher = el('button', {class:'toggle', 'aria-expanded':'true', 'aria-label':'展开或收起对话导航'}, '☰  导航');
+  const launcher = el('button', {class:'toggle', 'aria-expanded':'true', 'aria-label':'对话导航：单击展开或收起，拖动调整位置',title:'单击展开或收起，按住拖动调整位置'}, '☰  导航');
   const section = el('section', {class:'panel', 'aria-label':'对话导航'});
   const header = el('header', {role:'tablist', 'aria-label':'功能'});
   header.append(el('button', {role:'tab','data-tab':'questions','aria-selected':'true'}, '对话目录'), el('button', {role:'tab','data-tab':'projects','aria-selected':'false'}, '项目'));
@@ -94,6 +112,57 @@
   body.addEventListener('scroll', hidePreview, {passive:true});
   window.addEventListener('resize', hidePreview);
   ui.addEventListener('keydown', event => { if (event.key === 'Escape') hidePreview(); });
+  let drag = null, suppressToggleClick = false, suppressClickTimer;
+  function placePanel(x, y) {
+    const box = host.getBoundingClientRect();
+    const width = box.width || Math.min(230, innerWidth - 24);
+    const height = box.height || toggle.getBoundingClientRect().height || 36;
+    const position = {
+      x: Math.max(12, Math.min(x, Math.max(12, innerWidth-width-12))),
+      y: Math.max(12, Math.min(y, Math.max(12, innerHeight-height-12)))
+    };
+    host.style.right = 'auto'; host.style.left = position.x+'px'; host.style.top = position.y+'px';
+    return position;
+  }
+  function keepPanelVisible() {
+    if (drag) return;
+    if (settings.position) placePanel(settings.position.x, settings.position.y);
+  }
+  toggle.addEventListener('pointerdown', event => {
+    if (!storageReady || event.button !== 0 || event.isPrimary === false) return;
+    clearTimeout(suppressClickTimer); suppressToggleClick = false;
+    const box = host.getBoundingClientRect();
+    drag = {id:event.pointerId,startX:event.clientX,startY:event.clientY,x:box.left,y:box.top,moved:false};
+    toggle.setPointerCapture?.(event.pointerId);
+  });
+  window.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX-drag.startX, dy = event.clientY-drag.startY;
+    if (!drag.moved && Math.hypot(dx,dy) < 5) return;
+    drag.moved = true; suppressToggleClick = true; hidePreview();
+    placePanel(drag.x+dx,drag.y+dy);
+    event.preventDefault();
+  }, {passive:false});
+  function finishDrag(event) {
+    if (!drag || event.pointerId !== drag.id) return;
+    const finished = drag; drag = null;
+    if (toggle.hasPointerCapture?.(event.pointerId)) toggle.releasePointerCapture(event.pointerId);
+    if (finished.moved) {
+      if (event.type === 'pointercancel') {
+        if (settings.position) keepPanelVisible();
+        else placePanel(finished.x,finished.y);
+      } else {
+        settings.position = placePanel(parseFloat(host.style.left),parseFloat(host.style.top));
+        void persist();
+      }
+      // The click generated by the same pointer-up must not collapse the panel.
+      suppressClickTimer = setTimeout(() => { suppressToggleClick = false; }, 0);
+    }
+  }
+  window.addEventListener('pointerup', finishDrag);
+  window.addEventListener('pointercancel', finishDrag);
+  window.addEventListener('resize', keepPanelVisible);
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(keepPanelVisible).observe(host);
   const observer = new MutationObserver(records => {
     if (records.some(record => record.type !== 'attributes' || (record.attributeName === 'class' && !record.target.classList.contains('cgt-jump-target')) || record.attributeName !== 'class')) schedule();
   });
@@ -119,7 +188,7 @@
   function observe() {
     for (const root of roots) observer.observe(root.nodeType === 9 ? root.documentElement : root, {
       childList: true, subtree: true, characterData: true, attributes: true,
-      attributeFilter: ['href', 'data-message-author-role', 'data-turn', 'data-user-message-bubble', 'data-content-search-unit-key', 'class', 'data-app-action-sidebar-project-id', 'data-app-action-sidebar-project-label']
+      attributeFilter: ['href', 'data-message-author-role', 'data-turn', 'data-user-message-bubble', 'data-content-search-unit-key', 'data-chatgpt-search-unit-key', 'data-chatgpt-search-message-ids', 'class', 'data-app-action-sidebar-project-id', 'data-app-action-sidebar-project-label']
     });
   }
   document.addEventListener('load', event => { if (event.target.tagName === 'IFRAME') schedule(); }, true);
@@ -128,12 +197,14 @@
     panel.hidden = settings.collapsed;
     if (settings.collapsed) hidePreview();
     toggle.setAttribute('aria-expanded', String(!settings.collapsed));
+    keepPanelVisible();
   }
   async function persist() {
     try { await chrome.storage.local.set({ [KEY]: settings }); }
     catch { note('设置未保存，请刷新页面后重试。当前操作仍有效。'); }
   }
   toggle.addEventListener('click', () => {
+    if (suppressToggleClick) { suppressToggleClick = false; return; }
     if (!storageReady) return;
     settings.collapsed = !settings.collapsed;
     applyCollapsed(); void persist();
@@ -275,33 +346,41 @@
         }
       }
     }
-    const selectors = '.rich-text-user-turn, [data-user-message-bubble="true"], [data-content-search-unit-key$=":user"], [data-message-author-role="user"], [data-turn="user"], .user-message-bubble-color, [data-testid="user-message"], [data-test-id="user-message"]' + (learnedSelector ? ', ' + learnedSelector : '');
-    const candidates = queryAll(selectors).map(messageOf).filter(Boolean).filter(message => {
+    const selectors = '.rich-text-user-turn, [data-chatgpt-search-unit-key$=":user"], [data-user-message-bubble="true"], [data-content-search-unit-key$=":user"], [data-message-author-role="user"], [data-turn="user"], .user-message-bubble-color, [data-testid="user-message"], [data-test-id="user-message"]' + (learnedSelector ? ', ' + learnedSelector : '');
+    const matched = queryAll(selectors);
+    scanStats = {matched:matched.length,rejected:0,wrongRoute:0,live:0};
+    const candidates = matched.map(element=>{ const message=messageOf(element); if (!message) scanStats.rejected++; return message; }).filter(Boolean).filter(message => {
       const turn = message.element.closest('[data-content-search-unit-key],[data-turn-key],[data-content-search-turn-key]');
-      const fingerprint = [turn?.getAttribute('data-content-search-unit-key'), turn?.getAttribute('data-turn-key'), turn?.getAttribute('data-content-search-turn-key'), message.text].join('\n');
+      const fingerprint = [turnKey(message.element), turn?.getAttribute('data-content-search-unit-key'), turn?.getAttribute('data-turn-key'), turn?.getAttribute('data-content-search-turn-key'), message.text].join('\n');
       const owner = messageOwners.get(message.element);
       // URL changes can precede React replacing the old conversation nodes.
-      if (owner && owner.route !== route && owner.fingerprint === fingerprint) return false;
+      if (!freshRouteRead && owner && owner.route !== route && owner.fingerprint === fingerprint) { scanStats.wrongRoute++; return false; }
       messageOwners.set(message.element, {route, fingerprint});
       return true;
     });
-    return candidates.filter(candidate => !candidates.some(other => other !== candidate && candidate.element.contains(other.element)));
+    const live = candidates.filter(candidate => !candidates.some(other => other !== candidate && candidate.element.contains(other.element)));
+    scanStats.live = live.length;
+    return live;
   }
   function turnKey(element) {
-    let searchKey = null;
+    let searchKey = null, turnId = null;
     for (let node = element; node; node = composedParent(node)) {
       if (node.matches('main,[role="main"]')) break;
+      for (const attr of ['data-chatgpt-search-message-ids','data-message-id']) {
+        const value = node.getAttribute(attr)?.trim();
+        if (value) return attr+':'+value.split(/\s+/).sort().join(' ');
+      }
       // Prefer true message/turn IDs over positional search-unit keys on inner wrappers.
       for (const attr of ['data-message-id','data-turn-key','data-content-search-turn-key']) {
         const value = node.getAttribute(attr);
-        if (value && !value.startsWith('fallback-')) return attr+':'+value;
+        if (value && !value.startsWith('fallback-') && !turnId) turnId = attr+':'+value;
       }
       const unit = node.getAttribute('data-content-search-unit-key');
       if (unit && !unit.startsWith('fallback-') && !searchKey) searchKey = 'data-content-search-unit-key:'+unit;
     }
     // fallback-* identifies a search position, which may be reused after history loading.
     // Use the existing element/text matching path rather than merging by this index.
-    return searchKey;
+    return turnId || searchKey;
   }
   function mergeMessages(live) {
     const used = new Set();
@@ -309,10 +388,11 @@
     const batch = live.map(message => {
       const stable = turnKey(message.element);
       const prior = elementKeys.get(message.element);
-      let record = stable ? catalog.find(item => item.key === stable) : null;
-      if (!record && !stable && prior?.route === route && prior.text === message.text) record = catalog.find(item => item.key === prior.key);
+      let record = stable ? catalog.find(item => item.key === stable || item.ids.has(stable)) : null;
+      if (!record && prior && prior.route === route && prior.text === message.text) record = catalog.find(item => item.key === prior.key && (!stable || item.provisional));
       if (!record && !stable) record = catalog.find(item => item.text === message.text && !used.has(item.key));
-      if (!record) record = {key:stable || 'local:'+nextMessageId++, text:message.text, element:null};
+      if (!record) record = {key:stable || 'local:'+nextMessageId++, text:message.text, element:null, ids:new Set(stable ? [stable] : []), provisional:!stable};
+      if (stable) { record.ids.add(stable); record.provisional = false; }
       record.text = message.text; record.element = message.element;
       used.add(record.key);
       elementKeys.set(message.element,{route,key:record.key,text:record.text});
@@ -410,7 +490,7 @@
     hidePreview(); signature = next; body.replaceChildren();
     if (tab === 'questions') {
       const hint = document.createElement('p'); hint.className = 'note';
-      hint.textContent = messages.length ? `已加载${messages.length}个问题，点击跳转` : location.pathname.includes('/c/') ? '正在加载对话…' : '进入任一对话，目录会自动出现。';
+      hint.textContent = messages.length ? `已加载${messages.length}个问题，点击跳转` : location.pathname.includes('/c/') ? '正在加载对话…' : '发送问题后会自动生成目录。';
       body.append(hint);
       messages.forEach((message, index) => {
         const button = document.createElement('button');
@@ -424,6 +504,7 @@
         button.append(number, label);
         button.addEventListener('click', () => {
           if (route !== location.pathname) { update(); return; }
+          if (directoryPhase !== 'ready') return;
           hidePreview(); jumpTo(message.key);
         });
         body.append(button);
@@ -484,12 +565,60 @@
       markActive(index < 0 && messages.length ? 0 : index);
     });
   }, { capture: true, passive: true });
-  function update() {
+  function scanDirectory() {
+    if (directoryPhase === 'draft') return;
+    if (directoryPhase === 'settling') {
+      nextScanAt = Date.now()+250;
+      let live = readMessages();
+      if (initializingNewChat) {
+        const confirmedTexts = new Set(live.filter(message=>turnKey(message.element)).map(message=>message.text));
+        live = live.filter(message=>turnKey(message.element) || !confirmedTexts.has(message.text));
+      }
+      const signature = JSON.stringify(live.map(message=>[turnKey(message.element),message.text]));
+      if (!live.length) { snapshotSignature = ''; snapshotSince = 0; return; }
+      if (signature !== snapshotSignature) { snapshotSignature = signature; snapshotSince = Date.now(); }
+      if (Date.now() < settleUntil || Date.now()-snapshotSince < 200) return;
+      catalog = [];
+      messages = mergeMessages(live); backgroundRebuild = false;
+      directoryPhase = 'ready'; initializingNewChat = false; freshRouteRead = false;
+      return;
+    }
+    messages = mergeMessages(readMessages());
+  }
+  document.addEventListener('click', event => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const link = event.composedPath().find(node=>node.nodeType === 1 && node.matches('a[href]'));
+    if (link) {
+      try { const url = new URL(link.getAttribute('href'),location.href); if (url.origin === location.origin && url.pathname !== location.pathname) requestedNavigation = {path:url.pathname,at:Date.now()}; } catch {}
+      return;
+    }
+    const control = event.composedPath().find(node=>node.nodeType === 1 && node.matches('button,[role="button"]'));
+    const label = control?.getAttribute('aria-label') || control?.getAttribute('title') || control?.textContent?.trim();
+    if (/^(新对话|新聊天|新建对话|新建聊天|New chat)(?:\s*[（(].*)?$/i.test(label || '')) requestedNavigation = {newChat:true,at:Date.now()};
+  },true);
+  function update(event) {
     clearTimeout(timer); timer = undefined; observer.disconnect();
     try {
       if (route !== location.pathname) {
-        route = location.pathname; signature = ''; active = -1; activeKey = null;
-        catalog = []; nextMessageId = 1; pendingJump = null; scrollDirection = 1; messages = []; note(''); render();
+        const wasDraft = directoryPhase === 'draft' || initializingNewChat;
+        const next = location.pathname;
+        const recentIntent = requestedNavigation && Date.now()-requestedNavigation.at < 2000;
+        const explicitSwitch = !!(recentIntent && (requestedNavigation.newChat || requestedNavigation.path === next)) || (event?.type === 'popstate' && event.isTrusted);
+        // Decide whether to retain the last display from navigation intent, never conversation identity.
+        // The new catalog is always built independently and atomically replaces that display.
+        freshRouteRead = !explicitSwitch;
+        lastTransition = {from:routeLabel(route),to:routeLabel(next),event:event?.type || 'observer-or-timer',trusted:!!event?.isTrusted,explicit:explicitSwitch,fresh:freshRouteRead,before:catalog.length};
+        requestedNavigation = null;
+        backgroundRebuild = freshRouteRead && messages.length > 0;
+        route = next; signature = ''; active = -1; activeKey = null;
+        const previousDisplay = backgroundRebuild ? messages.map(message=>({...message,element:null})) : [];
+        catalog = []; nextMessageId = 1; messages = previousDisplay;
+        pendingJump = null; scrollDirection = 1;
+        directoryPhase = route.includes('/c/') ? 'settling' : 'draft';
+        initializingNewChat = wasDraft && directoryPhase === 'settling';
+        settleUntil = Date.now()+350; nextScanAt = settleUntil;
+        snapshotSignature = ''; snapshotSince = 0;
+        note(''); render();
       }
       host.toggleAttribute('data-dark', document.documentElement.classList.contains('dark') || document.documentElement.style.colorScheme === 'dark');
       roots = collectRoots();
@@ -500,8 +629,9 @@
         localStyle.textContent = '.cgt-hidden-project{display:none!important}.cgt-project-wrap{position:relative}.cgt-hide-project{position:absolute;right:30px;top:6px;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}.cgt-jump-target{outline:1px solid #8888;outline-offset:6px}';
         (root.head || (root.nodeType === 9 ? root.documentElement : root)).append(localStyle);
       }
-      syncProjects(); messages = mergeMessages(readMessages()); render(); advanceJump();
-    } finally { observe(); }
+      syncProjects(); scanDirectory(); render(); advanceJump();
+    } catch (error) { recordTrace(error.name); throw error; }
+    finally { recordTrace(); observe(); }
   }
   // Throttle instead of debounce: streaming responses must not postpone updates forever.
   function schedule() { if (!timer) timer = setTimeout(() => { timer = undefined; update(); }, 120); }
@@ -513,6 +643,7 @@
     }
     const stored = result[KEY];
     if (stored && typeof stored === 'object') {
+      if (stored.position && Number.isFinite(stored.position.x) && Number.isFinite(stored.position.y)) settings.position = {x:stored.position.x,y:stored.position.y};
       if (typeof stored.collapsed === 'boolean') settings.collapsed = stored.collapsed;
       if (stored.hidden && typeof stored.hidden === 'object' && !Array.isArray(stored.hidden)) {
         // Stored links are rendered in the page; accept only same-site project paths.
@@ -538,6 +669,6 @@
   setInterval(() => { if (pendingJump) update(); }, 250);
   window.addEventListener('popstate', update);
   window.addEventListener('hashchange', update);
-  setInterval(() => { if (route !== location.pathname) update(); }, 100);
+  setInterval(() => { if (route !== location.pathname || (directoryPhase === 'settling' && Date.now() >= nextScanAt)) update(); }, 100);
   setInterval(schedule, 1500); // Also discover late-attached shadow roots and iframe documents.
 })();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Tidy · 整理助手",
-  "version": "0.3.8",
+  "version": "0.6.0",
   "description": "当前对话问题目录，以及可恢复的 Projects 本地隐藏。",
   "permissions": [
     "storage"
